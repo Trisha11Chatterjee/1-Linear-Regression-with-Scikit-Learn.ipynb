@@ -1,0 +1,1263 @@
+---
+title: "Analysis and prediction of medical charges"
+author: "Abdelghafour Ait bennassar, Salma Mounji"
+date: "April 20, 2021"
+output:
+  html_document: 
+    toc: true
+    toc_depth: 3
+    code_folding: hide
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	eval = TRUE,
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE
+)
+```
+# Introduction 
+To realize their profit, insurance companies must charge a higher premium than the amount paid to the insured. For this reason, insurance companies invest a lot of time, effort, and money in creating models that are able to accurately predict health care costs.
+In order to fulfill this mission, we will first analyze the factors that influence medical loads and secondly try to build an adequate model and optimize its performance.
+
+# Exploratory data analysis
+
+## Importing data
+```{r cache = FALSE}
+insurance_data <- read.csv("../input/insurance/insurance.csv")
+```
+
+## Importing the necessary tools
+```{r }
+library(ggthemes)
+library(tidyverse)
+library(ggridges)
+library(magrittr)
+library(gridExtra)
+library(patchwork)
+library(inspectdf)
+library(corrplot)
+library(tidymodels)
+library(car)
+library(caret)
+theme_set(theme_bw())
+```
+
+## Overview of the data
+```{r}
+glimpse(insurance_data)
+```
+Many factors that influence the amount an insured pays for medical insurance are beyond their control. Nonetheless, it is good to have an understanding of what they are. Here are some factors collected by insurance, which we will study their influence on the cost of medical insurance premiums:
+We have a dataset that includes 1338 observations on 7 variables
+
+* Age: the age of the insured (recipients).
+* Sex: sex of insured persons; "male" or "female".
+* bmi: body mass index, providing an understanding of the body, relatively high or low weights relative to height, objective body weight index (kg / m ^ 2) using the height / weight ratio.
+* children: number of children covered by health insurance / number of dependents.
+* smoker: does the insured smoke or not.
+* region: the recipient's residential area in the United States; northeast, southeast, southwest, northwest.
+* charges: Individual medical costs billed by health insurance.
+
+We will convert the variables sex, children, region, smoker to the type factor which corresponds to the categorical variables:
+```{r }
+insurance_data$sex %<>% as.factor()
+insurance_data$children %<>% as.factor()
+insurance_data$region %<>% as.factor()
+insurance_data$smoker %<>% as.factor()
+```
+
+## Description of variables
+```{r}
+summary(insurance_data)
+```
+
+## Discretization of the "bmi" variable
+```{r }
+insurance_data %<>% mutate(bmi_cat = cut(bmi,
+  breaks = c(0, 18.5, 25, 30, 60),
+  labels = c("Under Weight", "Normal Weight", "Overweight", "Obese")
+))
+```
++ Under Weight:  bmi<18.5
++ Normal Weight:  18.5<bmi<25
++ Overweight : 25=<bmi<30
++ Obese: bmi>=30
+
+## Description of categorical variables
+```{r paged.print=FALSE, results="asis", cache = FALSE}
+categ_cols <- insurance_data %>% select_if(~ class(.) == "factor")
+for (col in names(categ_cols)) {
+  t <- insurance_data %>%
+    group_by_(col) %>%
+    summarise(count = n()) %>%
+    mutate(frequency = paste0(round(100 * count / sum(count), 0), "%")) %>% 
+    knitr::kable("html", align = "lcc") %>%
+    kableExtra::kable_styling(full_width = F, position = "left") %>% 
+    print()
+}
+```
+| **Observations :**  
+|  - 50% of individuals have at most 1 child, 75% have at most 2.
+|  - the dominance of obesity in the sample studied.
+|  - 80% of people are smokers.
+|  - the dataset is balanced with respect to sex and region.
+
+
+## Proportions of categories in categorical variables
+
+```{r, cache = FALSE}
+show_plot(inspect_cat(insurance_data))
+```
+
+**Note:** Individuals with more than 3 children and those underweight are negligible in our sample so we will not take them into account for the comparison.
+
+
+## Missing values
+
+```{r echo = FALSE, paged.print=FALSE}
+missing_v <- colSums(is.na(insurance_data)) %>%
+  as.data.frame()
+names(missing_v) <- c("count missing")
+missing_v %>% 
+  knitr::kable(align = "c") %>% 
+  kableExtra::kable_styling(full_width = F, position = "left")
+```
+<br/>
+the dataset contains no missing values!
+
+# Visualisation
+
+## Correlation matrix
+```{r echo = FALSE, cache = FALSE}
+insurance_data %>%
+  select(age:charges) %>%
+  lapply(as.numeric) %>%
+  as.data.frame() %>%
+  cor() -> M
+col <- colorRampPalette(c("#BB4444", "#EE9988", "#FAFAFA", "#77AADD", "#4477AA"))
+corrplot(M, method = "color", col = col(200),
+         type = "upper", order = "hclust", number.cex = .7,
+         addCoef.col = "black",
+         tl.col = "black",
+         diag = FALSE)
+```
+
+The variables most correlated with the charges are "smoker", "age" and "bmi".
+
+## Visualization of interactions between variables
+
+```{r fig.width=10, fig.height=6, cache = FALSE}
+CPCOLS <- c("#5B8888", "#bfd1d9", "#B57779", "#F4EDCA")
+
+insurance_data %>%
+  dplyr::select(age, bmi, smoker, charges) %>%
+  GGally::ggpairs(
+    lower = list(
+      continuous = GGally::wrap("points", col = "#4c86ad",alpha=0.6),
+      combo = GGally::wrap("box",
+        fill = "white", col ="black"
+          
+      )
+    ),
+    upper = list(
+      continuous = GGally::wrap("cor", col = "#4c86ad"),
+      combo = GGally::wrap("facetdensity",
+        col =
+          "black"
+      )
+    ),
+    diag = list(
+      continuous = GGally::wrap(
+        "barDiag",
+        fill = "#f5dfb3", col ="black",
+        bins = 18
+      ),
+      discrete = GGally::wrap("barDiag", fill = "#f5dfb3", col ="black")
+    )
+  )
+```
+**Observations :**
+
+* The distributions of variables :
+    + The age distribution of individuals is relatively the same, except for the 18 and 19 year olds who have a higher proportion.
+    + The distribution of bmi is apparently normal centered around 30.
+    + The distribution of charges is negatively asymmetric.
+* We notice an effect of these variables on the charges, which we will explore more in depth later.
+* No significant dependency between: age & bmi, smoker & bmi, age & smoker.
+
+## Distribution des charges 
+
+```{r fig.width=10 , fig.height=4, cache = FALSE}
+p1 <- ggplot(data = insurance_data, aes(x = charges)) +
+  geom_histogram(aes(y = ..density..),
+    col = "white",
+    bins = 25,
+    fill = "#90b8c2"
+  ) +
+  geom_density() +
+  labs(title = "Distribution des charges") +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+p2 <- ggplot(data = insurance_data, aes(y = charges)) +
+  geom_boxplot(fill = "#90b8c2") +
+  ggtitle("Charges Boxplot") +
+  theme(
+    axis.ticks.x = element_blank(),
+    axis.text.x = element_blank()
+  ) +
+  geom_hline(aes(yintercept = mean(charges)),
+    linetype = "dashed", col =
+      "red"
+  )
+grid.arrange(p1, p2,
+  ncol = 2, widths = c(5, 2)
+)
+```
+The charges distribution is biased to the right, we cannot check the presence of outliers from this box plot.
+So we will perform a logarithmic transformation to centralize the distribution.
+
+```{r fig.width=10 , fig.height=4, cache = FALSE}
+p1 <- ggplot(data = insurance_data, aes(x = log(charges))) +
+  geom_histogram(aes(y = ..density..),
+    col = "white",
+    bins = 25,
+    fill = "#90b8c2"
+  ) +
+  geom_density() +
+  labs(title = "Distribution des charges") +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+p2 <- ggplot(data = insurance_data, aes(y = log(charges))) +
+  geom_boxplot(fill = "#90b8c2") +
+  ggtitle("Charges Boxplot") +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.text.x = element_blank()
+  ) +
+  geom_hline(aes(yintercept = mean(log(charges))),
+    linetype = "dashed", col =
+      "red"
+  )
+grid.arrange(p1, p2,
+  ncol = 2, widths = c(5, 2)
+)
+```
+We can now assume that there is no anomaly.
+
+## Interactions between age, bmi and smoking and their impact on medical charges
+ 
+```{r fig.width=12 , fig.height=6, cache = FALSE}
+p1 <- insurance_data %>%
+  ggplot(aes(x = age, y = charges, col = bmi_cat)) +
+  geom_point(alpha = 0.6, size = 2.5)
+
+p2 <- insurance_data %>%
+  ggplot(aes(x = age, y = charges, col = smoker)) +
+  geom_point(alpha = 0.8,size = 2.5) +
+  scale_color_manual(values = c("#e09e8f", "#90b8c2")) +
+  geom_rug() +
+  geom_smooth() +
+  geom_smooth(
+    data = filter(insurance_data, smoker == "yes"),
+    col = "grey30",
+    method = lm,
+    se = FALSE
+  ) +
+  geom_smooth(
+    data = filter(insurance_data, smoker == "no"),
+    col = "grey30",
+    method = lm,
+    se = FALSE
+  )
+
+grid.arrange(p1, p2, nrow = 1)
+```
+The charges are linked to age by an almost linear relationship at three levels:
+
+* a first group which is characterized by the highest charges, it is completely made up of obese smoker individuals.
+* a second group which is characterized by the lowest charges, it consists entirely of non-smoking individuals and a normal bmi distribution.
+* and a third non-homogeneous group which requires more exploration.
+
+We can also see that - for the three levels - the older the customers, the higher their charges.
+
+
+```{r fig.width=12 , fig.height=8, cache = FALSE}
+p1 <- insurance_data %>%
+  ggplot(aes(x = bmi, y = charges, col = smoker)) +
+  geom_point(size = 2.5, alpha = 0.8) +
+  scale_color_manual(values = c("#6f9fb3", "#79a346")) +
+  theme(legend.position = c(0.08, 0.85)) +
+  geom_smooth(
+    data = filter(insurance_data, smoker == "yes"),
+    col = "blue"
+  ) +
+  geom_smooth(
+    data = filter(insurance_data, smoker == "yes"),
+    col = "black",
+    method = lm,
+    se = FALSE,
+    lty = "dashed"
+  ) +
+  geom_vline(aes(xintercept = 30), linetype = "dashed") +
+  geom_abline(aes(intercept = 12800, slope = 615), col = "red")
+
+p2 <- insurance_data %>%
+  ggplot(aes(
+    x = cut(bmi, breaks = 8),
+    y = charges,
+    col = smoker
+  )) +
+  geom_boxplot() +
+  scale_color_manual(values = c("#6f9fb3", "#79a346")) +
+  labs(x = "intervalles de bmi") +
+  guides(col = FALSE) +
+  labs(x = element_blank(), y = "\n\n") +
+  theme(axis.text.x = element_text(
+    size = 8,
+    angle = 40,
+    hjust = 1
+  )) +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+
+p3 <- insurance_data %>%
+  filter(smoker == "yes" & bmi_cat != "Under Weight") %>%
+  ggplot(aes(x = charges, fill = bmi_cat)) +
+  geom_density(alpha = 0.3) +
+  scale_color_manual(values = c("#e09e8f", "#90b8c2","#6f9fb3")) +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  ) +
+  theme(legend.position = c(0.85, 0.68)) +
+  labs(y = "\ndensity\n")
+p4 <- insurance_data %>%
+  filter(smoker == "no" & bmi_cat != "Under Weight") %>%
+  ggplot(aes(x = charges, fill = bmi_cat)) +
+  geom_density(alpha = 0.3) +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  ) +
+  guides(fill = FALSE) +
+  labs(y = "\n\n")
+gridExtra::grid.arrange(p1, p2, p3, p4, nrow = 2, heights = c(5, 3))
+```
+For non-smokers, obesity has no impact on charges.
+On the other hand, smokers almost create a new cloud of points separated from non-smokers which is characterized by the growth of charges according to the bmi. this cloud rises sharply when the obesity threshold is crossed (bmi = 30):
+The maximum load threshold for non-obese people is identical to the minimum load threshold for obese people.
+
+```{r fig.width=10, fig.height=6, cache = FALSE}
+p1 <- insurance_data %>%
+  ggplot(aes(x = bmi, y = charges, col = smoker)) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = c("#b36b56", "#6f9fb3")) +
+  geom_density_2d() +
+  stat_density_2d(aes(fill = ..level..), geom = "polygon", alpha = 0.35) +
+  labs(fill = "density\n") +
+  scale_fill_gradient(low = "white", high = "black") +
+  theme(
+    legend.position = c(0.07, 0.69),
+    legend.text = element_blank()
+  )
+ggExtra::ggMarginal(p1, groupColour = TRUE, groupFill = TRUE)
+# ggExtra::ggMarginal(p1,type = "histogram", fill = "grey", col = "black")
+```
+
+We can distinguish three centers of density:
+The first contains all non-smokers and is characterized by low charges and a normal distribution of bmi.
+The second group includes non-obese smokers with relatively high loads.
+and the last brings together smokers and obese individuals with very high loads.
+
+## Creation of a new "Health" variable
+
+We will create a "health" variable which separates each of these observed groups: 
+
+  - "Obese smokers"  
+  - "Non obese smokers"  
+  - "Non smokers"  
+
+```{r}
+insurance_data %<>%
+  mutate(
+    health = case_when(
+      smoker == "yes" & bmi_cat == "Obese" ~ "Obese and smoker",
+      smoker == "yes" & bmi_cat != "Obese" ~ "Non obese and smoker",
+      smoker == "no" ~ "Non smoker"
+    )
+  )
+insurance_data$health %<>% as.factor()
+```
+
+## Exploration of the new "Health" variable 
+```{r fig.width=12 , fig.height=10, cache = FALSE}
+p1 <- insurance_data %>%
+  ggplot(aes(x = charges, fill = health)) +
+  geom_density(alpha = 0.3) +
+  theme(legend.position = c(0.81, 0.87)) +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  ) +
+  labs(y = "density\n")
+p2 <- insurance_data %>%
+  ggplot(aes(y = charges, x = age, col = health)) +
+  geom_point() +
+  scale_color_manual(values = c("#d6907c","#93c754", "#77a2b5")) +
+  geom_smooth() +
+  geom_smooth(
+    aes(group = health),
+    col = "black",
+    method = lm,
+    se = FALSE,
+    lty = "dashed"
+  ) +
+  guides(col = FALSE)
+p3 <- insurance_data %>%
+  ggplot(aes(x = bmi, y = charges, col = health)) +
+  geom_point(size = 3, alpha = 0.5) +
+  scale_color_manual(values = c("#d6907c","#93c754", "#77a2b5")) +
+  stat_ellipse() +
+  geom_rug() +
+  guides(col = FALSE)
+p4 <- insurance_data %>%
+  ggplot(aes(x = age, y = charges, col = health)) +
+  geom_point(
+    size = 4,
+    alpha = 0.9,
+    shape = "O"
+  ) +
+  scale_color_manual(values = c("#d6907c","#93c754", "#77a2b5")) +
+  stat_ellipse() +
+  geom_rug() +
+  guides(col = FALSE) +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  ) +
+  labs(y = "\n\n")
+grid.arrange(p1, p2, p3, p4, nrow = 2)
+```
+
+It can now be seen that obese non-smokers are less charged than non-obese smokers. Indeed, the latter are all located in the second level of the scatter plot of charges vs age. the impact of obesity on charges is greater than the impact of smoking.
+On the other hand, non-smokers (both obese and non-obese) are mainly located in the first level but some are dispersed in the second which prompts us to look for the factor that causes this difference.
+We then conclude that the obesity factor separates smokers into two groups, an obese group which is significantly more charged than the non-obese group, but does not allow us to draw a conclusion about the non-smokers.
+
+## The impact of gender on medical costs
+```{r  fig.width=8 , fig.height=5, cache = FALSE}
+p1 <- ggplot(data = insurance_data, aes(sex, charges)) +
+  geom_boxplot(fill = c("#cfe6b8", "#8bb054")) +
+  labs(x = element_blank()) +
+  ggtitle("Boxplot of Medical Charges by Gender")
+
+p2 <- ggplot(insurance_data, aes(reorder(sex, charges), charges)) +
+  geom_bar(
+    fill = c("#cfe6b8", "#8bb054"),
+    col="black",
+    position = "dodge",
+    stat = "summary",
+    fun = "mean"
+  ) +
+  labs(x = element_blank(), y = element_blank()) +
+  ggtitle("Barplot of Medical Charges by Gender")
+p1 + p2
+```
+
+We notice that medical costs are higher for men than for women
+One wonders if the majority of smokers are men?
+```{r fig.width=16 , fig.height=6, cache = FALSE}
+p1 <- insurance_data %>%
+  ggplot(aes(x = smoker, fill = sex)) +
+  geom_bar(position = "dodge") +
+  theme(legend.position = c(0.8, 0.88)) +
+  ggtitle("Count of patients by Gender")+
+  scale_fill_manual(values = c("#e09e8f", "#90b8c2")) 
+p2 <- insurance_data %>%
+  ggplot(aes(sex, charges, fill = smoker)) +
+  geom_bar(
+    position = "dodge",
+    stat = "summary",
+    fun = "mean"
+  ) +
+  labs(x = element_blank(), y = "\n\n\ncharges") +
+  ggtitle("Barplot of Medical Charges by Gender")+
+  scale_fill_manual(values = c("#e09e8f", "#90b8c2")) 
+p3 <- insurance_data %>%
+  ggplot(aes(y = charges, x = smoker, fill = smoker)) +
+  geom_violin(width = 1.7) +
+  geom_boxplot(width = 0.28) +
+  guides(fill = FALSE) +
+  labs(x = element_blank(), y = element_blank()) +
+  ggtitle("Boxplot of Medical Charges by Gender") +
+  scale_fill_manual(values = c("#e09e8f", "#90b8c2")) +
+  facet_wrap(~sex)
+
+p1 + p2 + p3
+```
+
+We can now confirm our supposition.
+and by comparing smokers of both genders, we find that the difference in medical costs between men and women can be explained by two factors:
+
+* Men smoke more than women (graph 1) (as expected)
+* charges among smoker men are higher than charges among smoker women (graph 2 & 3) (maybe men smoke more frequently ?)
+
+## Regional analysis
+```{r fig.width=10 , fig.height=5, cache = FALSE}
+p1 <- ggplot(insurance_data, aes(charges,col = region),col = c("#a6bbff" ,"#ffc99c" ,"#f5dfb3", "#e6a1bc")) +
+  geom_density( fill = "grey", alpha = 0.05) +
+  ggtitle("Density of Medical Charges per Region") +
+  theme(legend.position = c(0.82, 0.82)) +
+  theme(axis.text.y = element_blank()) +
+  labs(y = "density\n")
+p2 <- ggplot(insurance_data, aes(reorder(region, charges), charges)) +
+  geom_bar(
+    fill = c("#c2aebb" , "#f5dfb3","#e09e8f","#90b8c2"),
+    position = "dodge",
+    stat = "summary",
+    fun = "mean"
+  ) +
+  labs(x = "", y = "\ncharges") +
+  ggtitle("Average of Medical Charges per Region")
+p1 + p2
+```
+It can be seen that medical costs are equally distributed over the regions with a slight increase in the south-east.
+Let's find the cause behind this difference!
+
+### Contingency table {.unlisted .unnumbered}
+```{r cache = FALSE}
+cat("% of each health category per regions :\n")
+round(100 * prop.table(table(
+  insurance_data$health,
+  insurance_data$region
+), margin = 2), digits = 2)
+cat("\n % of smokers per regions :\n")
+round(100 * prop.table(table(
+  insurance_data$smoker,
+  insurance_data$region
+), margin = 2), digits = 2)
+cat("\n % of each obesity category per regions :\n")
+round(100 * prop.table(
+  table(insurance_data$bmi_cat,
+        insurance_data$region),
+  margin = 2
+), digits = 2)
+```
+
+```{r cache = FALSE}
+ggpubr::ggballoonplot(as.data.frame(table(dplyr::select(
+  insurance_data, region, bmi_cat
+))),
+fill = "value") +
+  scale_fill_viridis_c(option = "D")
+library(FactoMineR)
+library(factoextra)
+res.ca <-
+  CA(table(dplyr::select(insurance_data, region, health)), graph = FALSE)
+fviz_ca_biplot(res.ca, repel = TRUE)
+```
+
+From to the contingency tables and the graph above, we can explain the high loads in the south-east by the presence of a significant proportion of smokers and obese patients compared to other regions.
+and using the AFC graph we can visualize the dependence between the modalities of "health" and "region", we see from the first axis which represents 83.5% of the information that the "southeast" region differs from the others by a remarkable dependence with the class "Obese and smoker".
+
+## Does the number of children of the insured influence his expenses?
+```{r fig.height=5, fig.width=10, cache = FALSE}
+p1 <- ggplot(filter(insurance_data, children %in% c(0:3))) +
+  geom_density_ridges(
+    aes(
+      x = charges,
+      y = children,
+      fill = children,
+      height = stat(density)
+    ),
+    alpha=0.6,
+    stat = "density",
+    scale = 2.25
+  ) +
+  # alpha = 1,rel_min_height = 0.002, quantile_lines = TRUE) +
+  scale_fill_manual(values = c("#f5dfb3","#e09e8f","#b36b56","#8bbfaf")) +
+  # scale_x_continuous(expand = c(0, 0)) +
+  scale_y_discrete(expand = expand_scale(mult = c(0.07, .7))) +
+  coord_cartesian(clip = "off") +
+  theme(
+    legend.position = c(0.88, 0.82),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  ) +
+  labs(y = "density")
+p2 <- insurance_data %>%
+  ggplot(aes(reorder(children, charges), charges)) +
+  geom_bar(
+    position = "dodge",
+    stat = "summary",
+    fun = "mean",
+    fill = c("#f5dfb3","#e09e8f","#b36b56","#8bbfaf")
+  ) +
+  scale_x_discrete(limits = factor(c(0:3))) +
+  labs(x = "children", y = "\n\ncharges\n",title="Average of medical charges by number of children")
+p1 + p2
+```
+The charges are higher among parents.
+The charges of non-parents are characterized by a particular density.
+
+We will visualize this difference with a new "parent" variable of two modalities "yes" and "no".
+
+```{r}
+insurance_data$parent <-
+  as.factor(ifelse(insurance_data$children == 0, "no", "yes"))
+```
+
+### Difference between charges for parents and non-parents {.unlisted .unnumbered}
+```{r fig.width=10, cache = FALSE}
+p1 <- insurance_data %>%
+  ggplot(aes(y = charges, x = parent, fill = parent)) +
+  geom_violin(width = 0.8,alpha=0.7) +
+  geom_boxplot(col = "grey30", alpha = 0.6, width = 0.13) +
+  theme(legend.position = c(0.9, 0.9)) +
+  labs(x = element_blank(), y = element_blank()) +
+  scale_fill_manual(values = c("#a7c76c","#d19bbb"))
+p <- insurance_data %>%
+  ggplot() +
+  geom_point(aes(x = age, y = charges, col = parent),
+             size = 1,
+             alpha = 0.8) +
+  scale_color_manual(values=c("#79a346","#d19bbb"))+
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank())
+
+p2 <- ggExtra::ggMarginal(p + theme(legend.position = "none"),
+
+  groupColour = TRUE,
+  groupFill = TRUE
+)
+grid.arrange(p1, p2,
+  ncol = 2, widths = c(2, 3)
+)
+```
+
+The distinction between the charges of parents and non-parents is more significant in the first level.
+The majority of individuals aged 30 to 50 are parents, while young and old individuals have no children covered by insurance.
+
+```{r fig.width=12 , fig.height=6, cache = FALSE}
+ad <- 0.9
+p1 <- insurance_data %>%
+  filter(parent == "yes") %>%
+  ggplot(aes(x = age, y = charges, col = health)) +
+  scale_color_manual(values = c("#79a346", "#245373","#964a74"))+
+  geom_point(size = 0.8, alpha = 0.7) +
+  stat_density_2d(
+    aes(fill = ..level..),
+    geom = "polygon",
+    alpha = 0.5,
+    adjust = ad
+  ) +
+  labs(fill = "densité\n") +
+  scale_fill_gradient(low = "white", high = "black") +
+  guides(fill = FALSE, col = FALSE)
+p3 <- ggExtra::ggMarginal(p1, groupColour = TRUE, groupFill = TRUE)
+p2 <- insurance_data %>%
+  filter(parent == "no") %>%
+  ggplot(aes(x = age, y = charges, col = health)) +
+  geom_point(size = 0.8, alpha = 0.7) +
+  scale_color_manual(values = c("#79a346", "#245373","#964a74")) +
+  stat_density_2d(
+    aes(fill = ..level..),
+    geom = "polygon",
+    alpha = 0.5,
+    adjust = ad
+  ) +
+  labs(y = "\n") +
+  scale_fill_gradient(low = "white", high = "black") +
+  guides(fill = FALSE, col = guide_legend(order=1))+
+  theme(legend.position = "left")
+p4 <- ggExtra::ggMarginal(p2, groupColour = TRUE, groupFill = TRUE)
+grid.arrange(p3, p4, nrow = 1, widths = c(6, 9))
+```
+Due to the relationship between age and charges:
+Parents have charges centered on the average of each level, unlike non-parents who have both high loads (older ones) and low loads (less old ones)
+This difference is less noticeable when the charges are high because of the dominance of the individual charges over the children's charges which become negligible.
+
+ 
+# Modelization 
+## Linear model
+### Model initialization
+We will start with a simple linear model using the two variables age and health.
+Centralizing the age variable (to allow interpretation of the intercept).
+```{r}
+insurance_data %<>% mutate(centred_age = age - 18)
+```
+
+
+```{r fig.width=9, cache = FALSE}
+insurance_data$health = relevel(insurance_data$health, ref = "Non smoker")
+mod.basic = lm(charges ~ centred_age + health,
+               data = insurance_data,
+               x = TRUE,
+               y = TRUE)
+summary(mod.basic)
+
+mod.basic %>%
+  augment() %>%
+  ggplot(aes(x = centred_age, y = charges)) +
+  geom_point(aes(col = health)) +
+  scale_color_manual(values = c("#79a346", "#245373","#964a74")) +
+  geom_line(aes(y = .fitted)) +
+  geom_segment(aes(xend = centred_age, yend = .fitted), col = "grey70") +
+  facet_grid( ~ health)
+mod.basic %>%
+  augment() %>%
+  ggplot(aes(x = .fitted, y = charges)) +
+  geom_point(shape = 1, aes(col = health)) +
+  scale_color_manual(values = c("#79a346", "#245373","#964a74")) +
+  geom_abline(slope = 1, lty = "dashed")
+
+```
+
+| On this first model:
+| - we obtained an adjusted R-squared of 0.86, which means that 86% of the variation in charges could be explained by the two independent variables age and health.
+| - it is also observed that all the independent variables are statistically significant predictors of medical costs (p.value less than 0.05 <- level of significance).
+| - The average charge for an 18-year-old non-smoking insured is 2693.654.
+| - One year increase in age increases the charges by 268,437 for the same category of health.
+| - Compared to non-smokers, controlling for age:
+|      Non-obese smokers have on average 13343.999 more charges.
+|      Obese smokers have on average 33334.018 more loads.
+ 
+### Initial model performance :   
+```{r cache = FALSE}
+mod.basic %>%
+  glance() %>%
+  dplyr::select(r.squared,
+         adj.r.squared,
+         AIC,
+         BIC,
+         statistic,
+         p.value,
+         df.residual,
+         nobs) %>% 
+  knitr::kable(align = "c") %>% 
+  kableExtra::kable_styling(full_width = F, position = "left")
+```
+
+### Verification of the regression assumptions for the initial model
+
+#### Checking the linearity of the relation
+```{r cache = FALSE}
+plot(mod.basic, which=1)
+```
+
+We can assume a linear relationship between the predictors and the target variable.
+
+#### Verification of the homogeneity of the variance by spread-location plot
+```{r cache = FALSE}
+plot(mod.basic, which=3)
+```
+
+We assume that the variability of the residuals by predicted values has a quadratic form for some group of individuals, which indicates heteroskedasticity (non-constant variances of the errors)
+
+this fact leads to performing a transformation on the age variable.
+
+### Model improvement
+```{r fig.width=9, cache = FALSE}
+mod.age2 = lm(charges ~ I(age ^ 2) + health, data = insurance_data)
+summary(mod.age2)
+```
+Performance :
+```{r cache = FALSE}
+mod.age2 %>%
+  glance() %>%
+  dplyr::select(r.squared,
+         adj.r.squared,
+         AIC,
+         BIC,
+         statistic,
+         p.value,
+         df.residual,
+         nobs) %>% 
+  knitr::kable(align = "c") %>% 
+  kableExtra::kable_styling(full_width = F, position = "left")
+```
+```{r cache = FALSE}
+plot(mod.age2, which = 1)
+```
+
+```{r cache = FALSE}
+plot(mod.age2, which = 3)
+```
+
+We can assume that the first two hypotheses are well verified for this second model.
+We will try to further improve the precision by adding other explanatory variables:
+
+```{r cache = FALSE}
+mod.extend = lm(charges ~ I(age ^ 2) + health + smoker:bmi + children + region +
+                  sex,
+                data = insurance_data)
+summary(mod.extend)
+```
+
+
+
+By adding other predictors the adjusted r-squared increases to 87.08%.
+
+We will test the importance of the sex and region variables in the performance of the model
+H0: adding the variable is irrelevant
+```{r cache = FALSE}
+anova(lm(charges ~ I(age ^ 2) + health + smoker:bmi + children + sex , data = insurance_data) ,
+      mod.extend)
+anova(
+  lm(charges ~ I(age ^ 2) + health + smoker:bmi + children + region , data = insurance_data) ,
+  mod.extend
+)
+```
+With a risk level of 5%, we reject the hypothesis H0 for both tests.
+So, we keep the two variables in the model.
+
+### Checking the assumptions for the new improved model
+
+Linéarité et normalité des résidus:
+```{r fig.height=4, fig.width=12, cache = FALSE}
+par(mfrow = c(1, 3))
+for (i in c(1, 3, 2)) {
+  plot(mod.extend, which = i)
+}
+```
+
+the distribution of residuals is not normal.
+the linearity assumption is verified and the variance seems constant, but we will perform a test to make sure. 
+
+heteroskedasticity:
+```{r cache = FALSE}
+library(lmtest)
+bptest(mod.extend) # check for linear heteroskedasticity
+ncvTest(mod.extend)# check for non linear heteroskedasticity
+```
+There is no sign of heteroskedasticity.
+
+```{r fig.height=8, fig.width=12, cache = FALSE}
+par(mfrow = c(2, 2))
+for (i in c(4:6)) {
+  plot(mod.extend, which = i)
+}
+influencePlot(mod.extend, main = "Influence Plot")
+```
+There are no highly influential points in the model, despite the existence of points having a large residual but they have no extreme or outlying values of the independent variables, their low hat-values does not allow them to influence the regression line, and the same for extreme points having a low residual.
+
+the points with the greatest values of cook's distance (measure of influence based on leverage and residuals) are more characterized by a large residual (order of magnitude > 3) => the error contributes more in the influence of these points.
+
+
+```{r cache = FALSE}
+perf=mod.extend %>%
+  glance() %>%
+  dplyr::select(r.squared,
+         adj.r.squared,
+         AIC,
+         BIC,
+         statistic,
+         p.value,
+         df.residual,
+         nobs)
+perf%>% knitr::kable(align = "c") %>% 
+        kableExtra::kable_styling(full_width = F, position = "left")
+
+
+```
+
+### Contribution of variables in the model :
+
+```{r cache = FALSE}
+library(relaimpo)
+mod.extend.shapley <-
+  calc.relimp(lm(charges ~ I(age ^ 2) + health + bmi + children + region +
+                   sex,
+                 data = insurance_data),
+              type = "lmg") 
+```
+
+```{r fig.height=4, fig.width=10, cache=FALSE}
+library(caret)
+mod.extend.shapley$lmg %>%
+  sort(T) %>% 
+  data.frame()  -> temp
+names(temp) <- c("Shaply_value")
+p = temp %>% 
+  cbind(name = rownames(.)) %>% 
+  ggplot()+
+  geom_col(aes(reorder(name, -Shaply_value), Shaply_value), stat = "identity",
+           fill = c("#4a9687","#c2aebb","#f5dfb3","#e09e8f","#cfe6b8","#f2d696"), col="black")+
+  ggtitle("Relative Importance of Predictors")+
+  theme(plot.title = element_text(hjust = 0.5))+
+  labs(x="Predictor Labels", y="Shapley Value Regression")
+grid.arrange(p ,tableGrob(round(temp,4)), ncol = 2, widths = c(4, 2))
+```
+
+To derive the importance of the predictor variables in this model. we will use a statistical method called regression of shapley values which is a solution resulting from the concept of game theory. Its goal is to evenly distribute the importance of predictors in regression analysis. Given n number of independent variables (IV), we will run all combinations of linear regression models using this list of (IV) with the dependent variable (DV) and obtain the R-squared of each model. To get the measure of the importance of each independent variable (IV), the average contribution to the total R-squared of each (IV) is calculated by decomposing the total R-squared and calculating the proportional marginal contribution of each (IV).
+
+Assuming that we have 2 (IV) A and B and a dependent variable Y. we must build 3 models as follows: 1) Y ~ A 2) Y ~ B 3) Y ~ A + B and each model would have their respective R-squared.
+
+To get the Shapley value of A, we will decompose the r-squared of the third model and calculate the marginal contribution of attribute A.
+
+Shapley value (A) = $\frac{(R^2 (AB) - R^2 (B)) + R^2 (A)}{2}$
+
+we used the function calc.relimp () from the relaimpo package to determine the Shapley value of our predictors.
+
+The Shapley Value scores of each attribute show their marginal contribution to the overall r-squared (0.8722) of the second model. we can therefore conclude that, out of the total variance of 87.22% explained by our model, almost 75% of it is due to the attribute "health".
+
+### Gneralized additive model 
+```{r cache = FALSE}
+library(mgcv)
+# Build the model
+mod.gam <- gam(charges ~ s(age) + health + s(bmi) + children + region +
+                 sex,
+               data = insurance_data)
+summary(mod.gam)
+```
+
+```{r cache = FALSE}
+mod.gam %>%
+  glance() %>%
+  mutate(adj.r.squared = 0.867) %>%
+  dplyr::select(adj.r.squared, AIC, BIC, nobs) %>% 
+  knitr::kable(align = "c") %>% 
+  kableExtra::kable_styling(full_width = F, position = "left")
+```
+
+No improvement is observed in the generalized additive model compared to the previous model, so the linear model is preferred for reasons of simplicity and interpretability.
+
+## K-nearest neighbour
+
+### Initial model :
+
+In order to be able to evaluate the knn model, we will split our dataset into two parts: 80% for the train set, and 20% for the test set.
+```{r cache = FALSE}
+set.seed(12345)
+insurance_data_split <-
+  initial_split(insurance_data, prop = .8, strata = "charges")
+insurance_train <- training(insurance_data_split)
+insurance_test <- testing(insurance_data_split)
+```
+
+Using the parsnip package, we will instantiate a knn model for the regression and train it on the train set.
+```{r cache = FALSE}
+library(parsnip)
+library(kknn)
+model_knn <- nearest_neighbor(mode = "regression") %>%
+  set_engine("kknn") %>%
+  fit(charges ~ age + bmi + children + health +
+        region, data = insurance_train)
+```
+Then we will use this model to make the predictions on the test set in order to evaluate its performance.
+```{r cache = FALSE}
+model_knn_pred <- model_knn %>%
+  predict(new_data = insurance_test) %>%
+  bind_cols(insurance_test %>% dplyr::select(charges))
+
+modelPerform = data.frame(
+  RMSE = RMSE(model_knn_pred$.pred, model_knn_pred$charges),
+  R2 = R2(model_knn_pred$.pred, model_knn_pred$charges)
+)
+modelPerform %>% 
+  knitr::kable(align = "c") %>% 
+  kableExtra::kable_styling(full_width = F, position = "left")
+```
+### Model improvement
+To further improve performance, we will try to find the optimal k.
+
+To automate the preprocessing, we will start by creating a recipe to standarize the numerical variables age and bmi, and then combine it with the model specification in a workflow.
+
+```{r cache = FALSE}
+#creating recipe
+ins_recipe <-
+  recipe(charges ~ age + bmi + children + health + region, data = insurance_train) %>%
+  step_scale(age, bmi) %>%
+  step_center(age, bmi)
+#model specification
+ins_spec <-
+  nearest_neighbor(weight_func = "rectangular", neighbors = tune()) %>%
+  set_engine("kknn") %>%
+  set_mode("regression")
+#workflow(model+recipe)
+ins_wf <- workflow() %>%
+  add_recipe(ins_recipe) %>%
+  add_model(ins_spec)
+ins_wf
+```
+
+To find the optimal k for the model, we will use the cross validation method with 5 folds, which consists on dividing data into 5 parts, and in each iteration keep one part for the validation and use the others for training the model and then take the average of the recorded scores.
+
+Here we will look for the optimal k in the interval [1,100], and measure the performance with cross-fold validation to reduce the error due to the possible interaction between the variables during a simple division.
+```{r cache = FALSE}
+set.seed(123456)
+ins_vfold <- vfold_cv(insurance_train, v = 5, strata = charges)
+
+gridvals <- tibble(neighbors = seq(1, 100))
+
+ins_results <- ins_wf %>%
+  tune_grid(resamples = ins_vfold, grid = gridvals) %>%
+  collect_metrics()
+
+ins_results  %>% 
+  knitr::kable(align = "c") %>% 
+  kableExtra::kable_styling(full_width = T, position = "left")  %>% 
+  kableExtra::kable_paper() %>%
+  kableExtra::scroll_box( height = "300px")
+```
+
+By comparing the RMSE for the different k, we can notice that if we take too much or very few neighbours we get a low precision.
+
+```{r cache = FALSE}
+ins_results %>%
+  filter(.metric == "rmse") %>%
+  ggplot(aes(neighbors, mean)) +
+  geom_line(col="red") +
+  geom_point(col = "#336980")+
+  labs(title="Residuals vs number of neighbours")
+```
+
+We can conclude that the optimal value is considering 19 neighbors, which can be interpreted as follows:
+to predict the charges of an insured, it is better to see the 19 closest observations of the insured for the variables age + bmi + children + health + region.
+
+```{r cache = FALSE}
+ins_min <- ins_results %>%
+  filter(.metric == "rmse") %>%
+  filter(mean == min(mean))
+ins_min %>% 
+  knitr::kable(align = "c") %>% 
+  kableExtra::kable_styling(full_width = F, position = "left")
+kmin <- ins_min %>% pull(neighbors)
+```
+
+Now, we will re-train the model using the optimal value  k=`r kmin`, and then evaluate its performance.
+
+```{r cache = FALSE}
+set.seed(123456)
+ins_spec <-
+  nearest_neighbor(weight_func = "rectangular", neighbors = kmin) %>%
+  set_engine("kknn") %>%
+  set_mode("regression")
+
+ins_fit <- workflow() %>%
+  add_recipe(ins_recipe) %>%
+  add_model(ins_spec) %>%
+  fit(data = insurance_train)
+ins_fit
+
+ins_res <- ins_fit %>%
+  predict(insurance_test) %>%
+  bind_cols(insurance_test)
+
+ins_res %>%  ggplot(aes(y = charges, x = .pred, col = health)) +
+  geom_point() +
+  scale_color_manual(values = c("#79a346", "#245373","#964a74")) +
+  geom_abline(slope = 1)
+
+ins_summary <- ins_res %>%
+  metrics(truth = charges, estimate = .pred)
+
+ins_summary %>% 
+  knitr::kable(align = "c") %>% 
+  kableExtra::kable_styling(full_width = F, position = "left")
+```
+
+
+## Random forest
+
+### Initial model :
+
+We will start by training a random forest model on the training-set using all predictors while keeping the default hyperparameters, and then evaluate the model on the test-set.
+
+```{r cache = FALSE}
+library(randomForest)
+model_rand_forest <- rand_forest(mode = "regression") %>%
+  set_engine("randomForest") %>%
+  fit(charges ~ age + bmi + children + health +
+        region + sex, data = insurance_train)
+```
+
+```{r cache = FALSE}
+model_rand_forest_pred <- model_rand_forest %>%
+  predict(new_data = insurance_test) %>%
+  bind_cols(insurance_test %>% dplyr::select(charges))
+model_rand_forest_pred %>% 
+  knitr::kable(align = "c") %>% 
+  kableExtra::kable_styling(full_width = F, position = "left")  %>% 
+  # kableExtra::kable_paper() %>%
+  kableExtra::scroll_box(width = "230px", height = "300px")
+modelPerform_rand_forest = data.frame(
+  RMSE = RMSE(
+    model_rand_forest_pred$.pred,
+    model_rand_forest_pred$charges
+  ),
+  R2 = R2(
+    model_rand_forest_pred$.pred,
+    model_rand_forest_pred$charges
+  )
+)
+modelPerform_rand_forest %>% 
+  knitr::kable(align = "c") %>% 
+  kableExtra::kable_styling(full_width = F, position = "left")
+```
+This model succeeded in explaining 86.81% of the total variance with an RMSE of 4726,053.
+
+### Model improvement
+
+We will now try to improve this performance by tuning the hyperparameters min_n (minimum number of observations required in a node to divide it) and mtry (The number of predictors that will be sampled at random at each division during the creation of the decision tree).
+
+To automate the preprocessings, we will use a recipe to center and reduce the numerical variables age and bmi, and combine it with the specification of the model in a workflow.
+```{r cache = FALSE}
+#creating recipe
+ins_recipe2 <-
+  recipe(charges ~ age + bmi + children + health + region + sex, data = insurance_train) %>%
+  step_scale(age, bmi) %>%
+  step_center(age, bmi)
+#model specification
+ins_spec_rf <- rand_forest(min_n = tune(),mtry=tune()) %>%
+  set_engine("randomForest") %>%
+  set_mode("regression")
+#workflow(model+recipe)
+ins_wf_rf <- workflow() %>%
+  add_recipe(ins_recipe2) %>%
+  add_model(ins_spec_rf)
+ins_wf_rf
+```
+Tuning the hyperparametrs :  
+We will use the "Grid search" method to be able to find the optimal combination of the hyperparameters "mtry" and "min_n".
+```{r cache=FALSE, include=FALSE}
+set.seed(123456)
+data_grid <- grid_regular(
+  mtry(range = c(2,7)),
+  min_n(range = c(26,38)),
+  levels=c(4,7)
+)
+data_grid %>% 
+  knitr::kable(align = "c") %>% 
+  kableExtra::kable_styling(full_width = F, position = "left")  %>% 
+  kableExtra::kable_paper() %>%
+  kableExtra::scroll_box( height = "250px")
+```
+
+```{r cache = FALSE}
+set.seed(123456)
+
+ins_results_rf_grid <- ins_wf_rf %>%
+  tune_grid(resamples = ins_vfold, grid = data_grid) 
+
+ins_results_rf <- ins_results_rf_grid%>%
+  collect_metrics()
+
+ins_results_rf %>% 
+  knitr::kable(align = "c") %>% 
+  kableExtra::kable_styling(full_width = T, position = "left")  %>% 
+  kableExtra::kable_paper() %>%
+  kableExtra::scroll_box( height = "300px")
+```
+
+Visualization of the error for the combinations of "mtry" and "min_n" :
+```{r fig.width=9, cache=FALSE}
+ins_results_rf %>%
+  filter(.metric == "rmse") %>%
+  mutate(min_n = factor(min_n)) %>%
+  ggplot(aes(x=mtry, y=mean,col=min_n)) +
+  geom_line(alpha = 0.5, size = 1.5) +
+  geom_point() +
+  labs(title="RMSE for each combinaison of mtry & min_n",y = "rmse")+
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+finally, we will choose the best hyper-parameters for our model, then update the specification of the original model to create the final model specification.
+```{r cache = FALSE}
+best_param <- ins_results_rf %>%
+  filter(.metric == "rmse") %>%
+  filter(mean == min(mean))
+best_param %>% 
+  knitr::kable(align = "c") %>% 
+  kableExtra::kable_styling(full_width = F, position = "left")
+best_mtry <- best_param %>% pull(mtry)
+best_min_n <- best_param %>% pull(min_n)
+```
+
+```{r cache = FALSE}
+best_rmse <- select_best(ins_results_rf_grid,"rmse")
+final_rf <- finalize_model(
+  ins_spec_rf,
+  best_rmse
+)
+final_rf
+```
+The optimal hyperparametrs are mtry = `r best_mtry` and min_n = `r best_min_n`.
+```{r cache = FALSE}
+last_fit(final_rf, charges~age + bmi + children + health + region + sex, insurance_data_split) %>% 
+  collect_metrics() %>% 
+  knitr::kable(align = "c") %>% 
+  kableExtra::kable_styling(full_width = F, position = "left")
+```
+Optimization of hyperparameters has improved performance.
+```{r cache = FALSE}
+model_final_rf <- rand_forest(mode = "regression",mtry=best_mtry,min_n = best_min_n) %>%
+  set_engine("randomForest") %>%
+  fit(charges ~ age + bmi + children + health +region + sex, data = insurance_train)
+```
+
+```{r cache = FALSE}
+model_final_rf_pred <- model_final_rf %>%
+  predict(new_data = insurance_test) %>%
+  bind_cols(insurance_test %>% dplyr::select(charges))
+model_final_rf_pred %>% 
+  knitr::kable(align = "c") %>% 
+  kableExtra::kable_styling(full_width = F, position = "left")  %>% 
+  # kableExtra::kable_paper() %>%
+  kableExtra::scroll_box(width = "230px", height = "300px")
+modelPerform_model_final = data.frame(
+  RMSE = RMSE(
+    model_final_rf_pred$.pred,
+    model_final_rf_pred$charges
+  ),
+  R2 = R2(
+    model_final_rf_pred$.pred,
+    model_final_rf_pred$charges
+  )
+)
+modelPerform_model_final %>% 
+  knitr::kable(align = "c") %>% 
+  kableExtra::kable_styling(full_width = F, position = "left")
+```
+
+```{r cache = FALSE}
+model_final_rf_pred %>%  ggplot(aes(y = charges, x = .pred)) +
+  geom_point(col="#336980",size=2,alpha=0.5) +
+  geom_abline(slope = 1,col="#821f2e")
+```
+
+## Comparison of models
+```{r cache = FALSE}
+result_linear_mod = predict(mod.extend, insurance_data)
+lm_rmse = RMSE(result_linear_mod, insurance_data$charges)
+lm_rsq = perf %>% pull(r.squared)
+knn_rmse = ins_summary %>% filter(.metric == "rmse") %>% pull(.estimate)
+knn_rsq = ins_summary %>% filter(.metric == "rsq") %>% pull(.estimate)
+rf_rsq = modelPerform_model_final %>% pull(R2)
+rf_rmse = modelPerform_model_final %>% pull(RMSE)
+
+model <- c("Linear model", "KNN", "Random forest")
+R_squared <- c(lm_rsq, knn_rsq, rf_rsq)
+RMSE <- c(lm_rmse, knn_rmse, rf_rmse)
+
+data.frame(model, R_squared, RMSE) %>% 
+  knitr::kable(align = "c") %>% 
+  kableExtra::kable_styling(full_width = F, position = "left")
+
+```
+
+# Conclusion
+
+The three models allow to achieve almost the same precision, but we have a great advantage of the interpretability in the linear model.
+To obtain even more precision in its predictions, this insurance company should collect more data about its customers in order to explain the behavior of some individuals that we have noticed - in the visualization phase - who do not follow the same trend as the others.
+If, even after the study, we cannot distinguish these observations from the rest of the population, we must use models dedicated to this problem, mainly RLM Robust Linear model which gives a weak weight to the influencing points.
+
+Upvotes and Comments are fully Welcomed and highly appreciated !
